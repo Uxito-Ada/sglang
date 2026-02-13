@@ -213,6 +213,12 @@ CHUNKED_PREFIX_CACHE_SUPPORTED_ATTENTION_BACKENDS = [
     "trtllm_mla",
 ]
 
+TORCH_DTYPE_TO_KV_CACHE_STR = {
+    torch.float8_e4m3fn: "fp8_e4m3",
+    torch.float8_e4m3fnuz: "fp8_e4m3",
+    torch.float8_e5m2: "fp8_e5m2",
+    torch.bfloat16: "bf16",
+}
 
 def add_mla_attention_backend(backend_name):
     if backend_name not in MLA_ATTENTION_BACKENDS:
