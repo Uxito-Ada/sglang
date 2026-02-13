@@ -1424,7 +1424,7 @@ class RowParallelLinear(LinearBase):
         # bias will not get added more than once in TP>1 case)
         bias_ = None if (self.tp_rank > 0 or self.skip_bias_add) else self.bias
         with use_symmetric_memory(
-            get_tp_group(), disabled=True #not is_allocation_symmetric()
+            get_tp_group(), disabled=not is_allocation_symmetric()
         ):
             #print(f"[INFO] quant method: {self.quant_method}")
             output_parallel = self.quant_method.apply(self, input_parallel, bias=bias_)
