@@ -363,7 +363,7 @@ class EAGLEWorker(TpModelWorker):
         model_worker_batch = batch.get_model_worker_batch()
         model_worker_batch.capture_hidden_mode = CaptureHiddenMode.FULL
         batch_result = self.target_worker.forward_batch_generation(model_worker_batch)
-        print(f"bathc_Result: {batch_result}")
+        #print(f"bathc_Result: {batch_result}")
         logits_output, next_token_ids = (
             batch_result.logits_output,
             batch_result.next_token_ids,
