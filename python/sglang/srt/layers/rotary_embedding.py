@@ -271,10 +271,10 @@ class RotaryEmbedding(MultiPlatformOp):
             positions = positions + offsets
         positions = positions.flatten()
         num_tokens = positions.shape[0]
-        print(f"positions shape: {positions.shape}")
-        print(f"cos_sin_cache shape: {self.cos_sin_cache.shape}")
-        print(f"positions max: {positions.max()}")
-        print(f"positions: {positions}")
+        #print(f"positions shape: {positions.shape}")
+        #print(f"cos_sin_cache shape: {self.cos_sin_cache.shape}")
+        #print(f"positions max: {positions.max()}")
+        #print(f"positions: {positions}")
         max_pos = self.cos_sin_cache.size(0) - 1
         if positions.max() >= max_pos or positions.min() < 0:
     #import warnings
