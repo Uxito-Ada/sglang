@@ -198,7 +198,7 @@ class EAGLEWorker(TpModelWorker):
             self.draft_model_runner.tp_group
         ), speculative_moe_backend_context(), speculative_moe_a2a_backend_context():
             self.init_attention_backend()
-            self.init_cuda_graphs()
+            #self.init_cuda_graphs()
 
         # Some dummy tensors
         self.num_new_pages_per_topk = torch.empty(
@@ -363,6 +363,7 @@ class EAGLEWorker(TpModelWorker):
         model_worker_batch = batch.get_model_worker_batch()
         model_worker_batch.capture_hidden_mode = CaptureHiddenMode.FULL
         batch_result = self.target_worker.forward_batch_generation(model_worker_batch)
+        print(f"bathc_Result: {batch_result}")
         logits_output, next_token_ids = (
             batch_result.logits_output,
             batch_result.next_token_ids,
@@ -476,7 +477,8 @@ class EAGLEWorker(TpModelWorker):
             duplicate_cache_len = 0
             source_cache_loc, target_cache_loc, last_page_lens_cumsum = None, None, None
 
-        assign_draft_cache_locs[(num_seqs,)](
+        #assign_draft_cache_locs[(num_seqs,)](
+        assign_draft_cache_locs(
             batch.req_pool_indices,
             batch.req_to_token_pool.req_to_token,
             batch.seq_lens,
@@ -542,9 +544,9 @@ class EAGLEWorker(TpModelWorker):
         forward_batch = ForwardBatch.init_new(
             model_worker_batch, self.draft_model_runner
         )
-        can_cuda_graph = self.cuda_graph_runner and self.cuda_graph_runner.can_run(
-            forward_batch
-        )
+        can_cuda_graph = False #self.cuda_graph_runner and self.cuda_graph_runner.can_run(
+        #    forward_batch
+        #)
         if can_cuda_graph:
             parent_list, top_scores_index, draft_tokens = self.cuda_graph_runner.replay(
                 forward_batch
@@ -939,10 +941,10 @@ class EAGLEWorker(TpModelWorker):
             forward_batch.seq_lens_sum = batch.seq_lens.sum().item()
 
         # Run
-        can_cuda_graph = (
-            self.cuda_graph_runner_for_draft_extend
-            and self.cuda_graph_runner_for_draft_extend.can_run(forward_batch)
-        )
+        can_cuda_graph = Fasle #(
+       #     self.cuda_graph_runner_for_draft_extend
+       #     and self.cuda_graph_runner_for_draft_extend.can_run(forward_batch)
+       # )
         if can_cuda_graph:
             logits_output = self.cuda_graph_runner_for_draft_extend.replay(
                 forward_batch

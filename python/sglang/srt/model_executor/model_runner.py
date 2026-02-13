@@ -213,13 +213,6 @@ CHUNKED_PREFIX_CACHE_SUPPORTED_ATTENTION_BACKENDS = [
     "trtllm_mla",
 ]
 
-TORCH_DTYPE_TO_KV_CACHE_STR = {
-    torch.float8_e4m3fn: "fp8_e4m3",
-    torch.float8_e4m3fnuz: "fp8_e4m3",
-    torch.float8_e5m2: "fp8_e5m2",
-    torch.bfloat16: "bf16",
-}
-
 
 def add_mla_attention_backend(backend_name):
     if backend_name not in MLA_ATTENTION_BACKENDS:
@@ -1580,14 +1573,8 @@ class ModelRunner(ModelRunnerKVCacheMixin):
             ):
                 if _is_hip:
                     self.kv_cache_dtype = fp8_dtype
-                    self.server_args.kv_cache_dtype = TORCH_DTYPE_TO_KV_CACHE_STR[
-                        self.kv_cache_dtype
-                    ]
                 else:
                     self.kv_cache_dtype = torch.float8_e4m3fn
-                    self.server_args.kv_cache_dtype = TORCH_DTYPE_TO_KV_CACHE_STR[
-                        self.kv_cache_dtype
-                    ]
             else:
                 self.kv_cache_dtype = self.dtype
         elif self.server_args.kv_cache_dtype == "fp8_e5m2":
@@ -2343,11 +2330,11 @@ class ModelRunner(ModelRunnerKVCacheMixin):
             if self.device == "cpu"
             else forward_batch.forward_mode.is_cuda_graph
         )
-        can_run_graph = bool(
-            mode_check()
-            and self.graph_runner
-            and self.graph_runner.can_run(forward_batch)
-        )
+        can_run_graph = False #bool(
+        #    mode_check()
+        #    and self.graph_runner
+        #    and self.graph_runner.can_run(forward_batch)
+        #)
 
         if can_run_graph:
             ret = self.graph_runner.replay(

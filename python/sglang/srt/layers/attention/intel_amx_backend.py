@@ -54,7 +54,12 @@ class IntelAMXAttnBackend(AttentionBackend):
         if forward_batch.forward_mode.is_decode_or_idle():
             max_extend_len = None
         else:
-            max_extend_len = torch.max(forward_batch.extend_seq_lens).item()
+            #print(forward_batch)
+            if forward_batch.extend_seq_lens is not None:
+                max_extend_len = torch.max(forward_batch.extend_seq_lens).item()
+            else:
+                max_extend_len =  forward_batch.seq_lens
+                forward_batch.extend_seq_lens = forward_batch.seq_lens
         self.forward_metadata = (attn_logits, max_extend_len)
 
     def get_graph_seq_len_fill_value(self):
@@ -81,6 +86,12 @@ class IntelAMXAttnBackend(AttentionBackend):
 
         _, max_extend_len = self.forward_metadata
 
+        print(f"forward_batch.seq_lens: {forward_batch.seq_lens}")
+        print(f"forward_batch.extend_seq_lens: {forward_batch.extend_seq_lens}")
+        print(f"max_extend_len: {max_extend_len}")
+        print(f"forward_batch.extend_start_loc: {forward_batch.extend_start_loc}")
+        if forward_batch.extend_start_loc is None:
+            forward_batch.extend_start_loc = torch.tensor([0], dtype=forward_batch.req_to_token_pool.req_to_token.dtype)
         self.extend_attention_fwd(
             q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
             k,
@@ -91,8 +102,8 @@ class IntelAMXAttnBackend(AttentionBackend):
             forward_batch.req_to_token_pool.req_to_token,
             forward_batch.req_pool_indices,
             forward_batch.seq_lens,
-            forward_batch.extend_seq_lens,
-            forward_batch.extend_start_loc,
+            forward_batch.extend_seq_lens.to(forward_batch.extend_start_loc.dtype),
+            forward_batch.extend_start_loc, #loc.to(forward_batch.req_to_token_pool.req_to_token.dtype),
             max_extend_len,
             layer.scaling,
             layer.logit_cap,
