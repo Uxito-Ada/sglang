@@ -28,7 +28,7 @@ class MultiPlatformOp(nn.Module):
 
         # States for torch.compile
         self._original_forward_method = None
-        self.is_torch_compile = False
+        self.is_torch_compile = True #False
 
     def enter_torch_compile(self, num_tokens: int):
         # Skip if Op is already entered compile mode.

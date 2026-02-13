@@ -69,17 +69,17 @@ class SpeculativeAlgorithm(Enum):
             from sglang.srt.speculative.multi_layer_eagle_worker import (
                 MultiLayerEagleWorker,
             )
-
+            #print("multi layer eagle!")
             return MultiLayerEagleWorker
 
         elif self.is_eagle():
             if enable_overlap:
                 from sglang.srt.speculative.eagle_worker_v2 import EAGLEWorkerV2
-
+                #print("eagle worker v2!")
                 return EAGLEWorkerV2
 
             from sglang.srt.speculative.eagle_worker import EAGLEWorker
-
+            #print("eagle v1!")
             return EAGLEWorker
         elif self.is_standalone():
             if enable_overlap:

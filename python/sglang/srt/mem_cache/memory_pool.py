@@ -740,10 +740,10 @@ class MHATokenToKVPool(KVCache):
             self.device_module.Stream() if _is_cuda and enable_alt_stream else None
         )
 
-        if enable_kv_cache_copy:
-            self._init_kv_copy_and_warmup()
-        else:
-            self._kv_copy_config = None
+        #if enable_kv_cache_copy:
+        #    self._init_kv_copy_and_warmup()
+        #else:
+        self._kv_copy_config = None
 
         self._finalize_allocation_log(size)
 

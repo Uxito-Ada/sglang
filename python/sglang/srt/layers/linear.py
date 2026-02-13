@@ -1426,6 +1426,7 @@ class RowParallelLinear(LinearBase):
         with use_symmetric_memory(
             get_tp_group(), disabled=not is_allocation_symmetric()
         ):
+            #print(f"[INFO] quant method: {self.quant_method}")
             output_parallel = self.quant_method.apply(self, input_parallel, bias=bias_)
 
         if self.reduce_results and self.tp_size > 1 and not skip_all_reduce:

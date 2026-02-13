@@ -43,6 +43,7 @@ class DraftBackendFactory:
         backend_map = {
             "flashinfer": self._create_flashinfer_decode_backend,
             "triton": self._create_triton_decode_backend,
+            "intel_amx": self._create_triton_decode_backend,
             "aiter": self._create_aiter_decode_backend,
             "fa3": self._create_fa3_decode_backend,
             "hybrid_linear_attn": (
@@ -79,6 +80,7 @@ class DraftBackendFactory:
             "trtllm_mla": self._create_trtllm_mla_prefill_backend,
             "nsa": self._create_nsa_prefill_backend,
             "ascend": self._create_ascend_prefill_backend,
+            "intel_amx": self._create_triton_prefill_backend
         }
         backend_name = (
             "decode_attention_backend"

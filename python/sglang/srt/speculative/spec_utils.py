@@ -58,65 +58,75 @@ def spec_need_hidden_states(server_args: Optional[ServerArgs] = None) -> bool:
     return not server_args.enable_multi_layer_eagle
 
 
-@triton.jit
 def create_extend_after_decode_spec_info(
     verified_id,
     seq_lens,
     accept_lens,
     positions,
     new_verified_id,
-    bs_upper: tl.constexpr,
 ):
-    pid = tl.program_id(axis=0)
-    offsets = tl.arange(0, bs_upper)
-    seq_length = tl.load(seq_lens + pid)
-    accept_length = tl.load(accept_lens + pid)
+    """
+    PyTorch implementation of the Triton kernel create_extend_after_decode_spec_info
+    """
+    bs_upper = seq_lens.shape[0]
+    batch_size = seq_lens.shape[0]
 
-    accept_len_cumsum = tl.sum(
-        tl.load(accept_lens + offsets, mask=offsets < pid, other=0)
-    )
-    positions_ptr = positions + accept_len_cumsum
-    mask = offsets < accept_length
-    tl.store(positions_ptr + offsets, seq_length - accept_length + offsets, mask)
+    for pid in range(batch_size):
+        seq_length = seq_lens[pid].item()
+        accept_length = accept_lens[pid].item()
 
-    accept_len_cumsum += accept_length - 1
-    verified_id_data = tl.load(verified_id + accept_len_cumsum)
-    tl.store(new_verified_id + pid, verified_id_data)
+        accept_len_cumsum = torch.sum(accept_lens[:pid]).item()
+        positions_ptr = positions[accept_len_cumsum:]
+        for offset in range(min(bs_upper, accept_length)):
+            positions_ptr[offset] = seq_length - accept_length + offset
+
+        accept_len_cumsum += accept_length - 1
+        verified_id_data = verified_id[accept_len_cumsum]
+        new_verified_id[pid] = verified_id_data
 
 
-@triton.jit
 def assign_req_to_token_pool(
     req_pool_indices,
     req_to_token,
     start_offset,
     end_offset,
     out_cache_loc,
-    pool_len: tl.constexpr,
-    bs_upper: tl.constexpr,
+    pool_len,
+    bs_upper,
 ):
-    BLOCK_SIZE: tl.constexpr = 32
-    pid = tl.program_id(axis=0)
-    kv_start = tl.load(start_offset + pid)
-    kv_end = tl.load(end_offset + pid)
-    token_pool = req_to_token + tl.load(req_pool_indices + pid) * pool_len
+    """
+    PyTorch implementation of the Triton kernel assign_req_to_token_pool
+    """
+    batch_size = req_pool_indices.shape[0]
+    BLOCK_SIZE = 32
 
-    length_offset = tl.arange(0, bs_upper)
-    start = tl.load(start_offset + length_offset, mask=length_offset < pid, other=0)
-    end = tl.load(end_offset + length_offset, mask=length_offset < pid, other=0)
-    out_offset = tl.sum(end - start, axis=0)
+    for pid in range(batch_size):
+        kv_start = start_offset[pid].item()
+        kv_end = end_offset[pid].item()
+        token_pool_idx = req_pool_indices[pid].item()
+        token_pool = req_to_token[token_pool_idx]
 
-    out_cache_ptr = out_cache_loc + out_offset
+        # Calculate out_offset
+        out_offset = 0
+        for length_pid in range(pid):
+            start_val = start_offset[length_pid].item()
+            end_val = end_offset[length_pid].item()
+            out_offset += (end_val - start_val)
 
-    save_offset = tl.arange(0, BLOCK_SIZE) + kv_start
-    load_offset = tl.arange(0, BLOCK_SIZE)
+        out_cache_ptr = out_cache_loc[out_offset:]
 
-    num_loop = tl.cdiv(kv_end - kv_start, BLOCK_SIZE)
-    for _ in range(num_loop):
-        mask = save_offset < kv_end
-        data = tl.load(out_cache_ptr + load_offset, mask=mask)
-        tl.store(token_pool + save_offset, data, mask=mask)
-        save_offset += BLOCK_SIZE
-        load_offset += BLOCK_SIZE
+        save_offset = kv_start
+        load_offset = 0
+
+        num_loop = (kv_end - kv_start + BLOCK_SIZE - 1) // BLOCK_SIZE
+        for loop_idx in range(num_loop):
+            block_size = min(BLOCK_SIZE, kv_end - save_offset)
+            mask = torch.arange(block_size) < block_size
+            if mask.any():
+                data = out_cache_ptr[load_offset:load_offset + block_size]
+                token_pool[save_offset:save_offset + block_size] = data
+            save_offset += BLOCK_SIZE
+            load_offset += BLOCK_SIZE
 
 
 def assign_req_to_token_pool_func(
@@ -127,18 +137,23 @@ def assign_req_to_token_pool_func(
     out_cache_loc: torch.Tensor,
     batch_size: int,
 ):
-    assign_req_to_token_pool[(batch_size,)](
+    """
+    Wrapper function to call assign_req_to_token_pool with appropriate parameters
+    """
+    pool_len = req_to_token.shape[1]
+    bs_upper = next_power_of_2(batch_size)
+   
+    assign_req_to_token_pool(
         req_pool_indices,
         req_to_token,
         start_offset,
         end_offset,
         out_cache_loc,
-        req_to_token.shape[1],
-        next_power_of_2(batch_size),
+        pool_len,
+        bs_upper,
     )
 
 
-@triton.jit
 def assign_draft_cache_locs(
     req_pool_indices,
     req_to_token,
@@ -149,105 +164,78 @@ def assign_draft_cache_locs(
     source_cache_loc,
     target_cache_loc,
     last_page_lens_cumsum,
-    duplicate_cache_len: tl.constexpr,
-    pool_len: tl.constexpr,
-    topk: tl.constexpr,
-    speculative_num_steps: tl.constexpr,
-    page_size: tl.constexpr,
-    bs_upper: tl.constexpr,
-    iter_upper: tl.constexpr,
+    duplicate_cache_len: int,
+    pool_len: int,
+    topk: int,
+    speculative_num_steps: int,
+    page_size: int,
+    bs_upper: int,
+    iter_upper: int,
 ):
-    BLOCK_SIZE: tl.constexpr = 128
-    pid = tl.program_id(axis=0)
+    """
+    PyTorch implementation of the Triton kernel assign_draft_cache_locs
+    """
+    BLOCK_SIZE = 128
+    batch_size = req_pool_indices.shape[0]
 
-    if page_size == 1 or topk == 1:
-        copy_len = topk * speculative_num_steps
-        out_cache_ptr = out_cache_loc + pid * topk * speculative_num_steps
-    else:
-        bs_offset = tl.arange(0, bs_upper)
-        copy_len = tl.load(extend_lens + pid)
-        cum_copy_len = tl.sum(tl.load(extend_lens + bs_offset, mask=bs_offset < pid))
-        out_cache_ptr = out_cache_loc + cum_copy_len
+    for pid in range(batch_size):
+        if page_size == 1 or topk == 1:
+            copy_len = topk * speculative_num_steps
+            out_cache_ptr = out_cache_loc[pid * topk * speculative_num_steps:]
+        else:
+            copy_len = extend_lens[pid].item()
+            cum_copy_len = torch.sum(extend_lens[:pid]).item()
+            out_cache_ptr = out_cache_loc[cum_copy_len:]
 
-    # Part 1: Copy from out_cache_loc to req_to_token
-    kv_start = tl.load(seq_lens + pid)
-    token_pool = req_to_token + tl.load(req_pool_indices + pid) * pool_len
-    num_loop = tl.cdiv(copy_len, BLOCK_SIZE)
-    for i in range(num_loop):
-        copy_offset = tl.arange(0, BLOCK_SIZE) + i * BLOCK_SIZE
-        mask = copy_offset < copy_len
-        data = tl.load(out_cache_ptr + copy_offset, mask=mask)
-        tl.store(token_pool + kv_start + copy_offset, data, mask=mask)
-    if page_size != 1 and topk != 1 and duplicate_cache_len > 0:
-        # Part 2: Copy indices into source_cache_loc and target_cache_loc
-        # Expected output: src:[8,9,10,8,9,10...] tgt:[16,17,18,24,25,26...]
-        prefix_len = tl.load(seq_lens + pid)
-        last_page_len = prefix_len % page_size
-        offsets = tl.arange(0, page_size)
-        mask = offsets < last_page_len
-        num_new_pages_per_topk_ = tl.load(num_new_pages_per_topk + pid)
-        prefix_base = token_pool + prefix_len - last_page_len
-        src_indices = tl.load(prefix_base + offsets, mask=mask)
-        last_page_lens_cumsum_ = tl.load(last_page_lens_cumsum + pid)
-        # Skip the first one since no copy is needed
-        for topk_id in range(1, topk):
-            tl.store(
-                source_cache_loc
-                + (topk - 1) * (last_page_lens_cumsum_ - last_page_len)
-                + (topk_id - 1) * last_page_len
-                + offsets,
-                src_indices,
-                mask=mask,
-            )
-            tgt_indices = tl.load(
-                prefix_base + topk_id * num_new_pages_per_topk_ * page_size + offsets,
-                mask=mask,
-            )
-            tl.store(
-                target_cache_loc
-                + (topk - 1) * (last_page_lens_cumsum_ - last_page_len)
-                + (topk_id - 1) * last_page_len
-                + offsets,
-                tgt_indices,
-                mask=mask,
-            )
-        # Part 3: Copy and remove the used indices for duplication
-        # speculative_num_steps=5, page_size=4, num_new_pages_per_topk_=2, last_page_len=1
-        #  - xxxxx .. | - xxxxx .. |
-        #   topk=0        topk=1
-        #  "-" means prefix tokens
-        #  "x" means speculative draft tokens
-        #  "." means padded tokens
-        # we only want to copy the "x" part.
-        iter_offset = tl.arange(0, iter_upper)
-        for topk_id in range(topk):
-            mask_upper = iter_offset < (speculative_num_steps + last_page_len)
-            mask_lower = iter_offset >= last_page_len
-            combined_mask = mask_upper & mask_lower
-            indices = tl.load(
-                prefix_base
-                + topk_id * num_new_pages_per_topk_ * page_size
-                + iter_offset,
-                mask=combined_mask,
-                other=0,
-            )
-            # Shift from previous batches
-            ptr_offset = pid * speculative_num_steps * topk
-            # Subtract last_page_len to fill the gap of duplicated last page tokens.
-            # For example, token pool is (1, 2, 3, 4 ,5) and last page is 1,
-            # we write 2, 3, 4 to the front of out_cache_loc.
-            tl.store(
-                out_cache_loc
-                + ptr_offset
-                + topk_id * speculative_num_steps
-                - last_page_len
-                + iter_offset,
-                indices,
-                mask=combined_mask,
-            )
+        # Part 1: Copy from out_cache_loc to req_to_token
+        kv_start = seq_lens[pid].item()
+        token_pool_idx = req_pool_indices[pid].item()
+        token_pool = req_to_token[token_pool_idx]
+
+        num_loop = (copy_len + BLOCK_SIZE - 1) // BLOCK_SIZE
+        for i in range(num_loop):
+            copy_start = i * BLOCK_SIZE
+            copy_end = min(copy_start + BLOCK_SIZE, copy_len)
+            block_size = copy_end - copy_start
+            if block_size > 0:
+                data = out_cache_ptr[copy_start:copy_end]
+                token_pool[kv_start + copy_start:kv_start + copy_end] = data
+
+        if page_size != 1 and topk != 1 and duplicate_cache_len > 0:
+            # Part 2: Copy indices into source_cache_loc and target_cache_loc
+            prefix_len = seq_lens[pid].item()
+            last_page_len = prefix_len % page_size
+            if last_page_len > 0:
+                num_new_pages_per_topk_ = num_new_pages_per_topk[pid].item()
+                prefix_base = prefix_len - last_page_len
+                src_indices = token_pool[prefix_base:prefix_base + last_page_len]
+               
+                last_page_lens_cumsum_ = last_page_lens_cumsum[pid].item()
+               
+                for topk_id in range(1, topk):
+                    src_start = (topk - 1) * (last_page_lens_cumsum_ - last_page_len) + (topk_id - 1) * last_page_len
+                    source_cache_loc[src_start:src_start + last_page_len] = src_indices
+                   
+                    tgt_indices = token_pool[prefix_base + topk_id * num_new_pages_per_topk_ * page_size:prefix_base + topk_id * num_new_pages_per_topk_ * page_size + last_page_len]
+                    target_cache_loc[src_start:src_start + last_page_len] = tgt_indices
+
+            # Part 3: Copy and remove the used indices for duplication
+            iter_start = pid * speculative_num_steps * topk
+            for topk_id in range(topk):
+                prefix_base = seq_lens[pid].item() // page_size * page_size
+                prefix_len = seq_lens[pid].item()
+                last_page_len = prefix_len % page_size
+                num_new_pages_per_topk_ = num_new_pages_per_topk[pid].item()
+                start = prefix_base + topk_id * num_new_pages_per_topk_ * page_size + last_page_len
+               
+                for iter_offset in range(speculative_num_steps):
+                    if last_page_len <= iter_offset < (speculative_num_steps + last_page_len):
+                        idx = start + iter_offset - last_page_len
+                        out_idx = iter_start + topk_id * speculative_num_steps - last_page_len + iter_offset
+                        if 0 <= out_idx < out_cache_loc.size(0) and 0 <= idx < token_pool.size(0):
+                            out_cache_loc[out_idx] = token_pool[idx]
 
 
-@triton.jit
 def generate_draft_decode_kv_indices(
     req_pool_indices,
     req_to_token,
@@ -255,148 +243,154 @@ def generate_draft_decode_kv_indices(
     kv_indices,
     kv_indptr,
     positions,
-    pool_len: tl.constexpr,
-    kv_indices_stride: tl.constexpr,
-    kv_indptr_stride: tl.constexpr,
-    bs_upper: tl.constexpr,
-    iter_upper: tl.constexpr,
-    num_tokens_upper: tl.constexpr,
-    page_size: tl.constexpr,
+    pool_len: int,
+    kv_indices_stride: int,
+    kv_indptr_stride: int,
+    bs_upper: int,
+    iter_upper: int,
+    num_tokens_upper: int,
+    page_size: int,
 ):
-    BLOCK_SIZE: tl.constexpr = 128
-    iters = tl.program_id(axis=0)
-    bid = tl.program_id(axis=1)
-    topk_id = tl.program_id(axis=2)
+    """
+    PyTorch implementation of the Triton kernel generate_draft_decode_kv_indices
+    """
+    num_steps = kv_indices.shape[0] // kv_indices_stride
+    num_seqs = req_pool_indices.shape[0]
+    topk = kv_indptr.shape[0] // kv_indptr_stride
+   
+    for iters in range(num_steps):
+        for bid in range(num_seqs):
+            for topk_id in range(topk):
+                kv_indices_ptr = kv_indices[iters * kv_indices_stride:]
+                kv_indptr_ptr = kv_indptr[iters * kv_indptr_stride:]
+               
+                seq_len = paged_kernel_lens[bid].item()
+                cum_seq_len = torch.sum(paged_kernel_lens[:bid]).item()
 
-    num_steps = tl.num_programs(axis=0)
-    num_seqs = tl.num_programs(axis=1)
-    topk = tl.num_programs(axis=2)
+                # Update kv_indices
+                kv_offset = cum_seq_len * topk + bid * (iters + 1) * topk + topk_id * (seq_len + iters + 1)
+                kv_ptr = kv_indices_ptr[kv_offset:]
+                token_pool_idx = req_pool_indices[bid].item()
+                token_pool_ptr = req_to_token[token_pool_idx]
 
-    kv_indices += kv_indices_stride * iters
-    kv_indptr += kv_indptr_stride * iters
-    iters += 1
+                # Copy prefix tokens
+                for block_start in range(0, seq_len, 128):
+                    block_end = min(block_start + 128, seq_len)
+                    block_size = block_end - block_start
+                    if block_size > 0:
+                        data = token_pool_ptr[block_start:block_end]
+                        kv_ptr[block_start:block_end] = data
 
-    load_offset = tl.arange(0, bs_upper)
-    seq_lens = tl.load(paged_kernel_lens + load_offset, mask=load_offset < bid, other=0)
-    seq_len = tl.load(paged_kernel_lens + bid)
-    cum_seq_len = tl.sum(seq_lens)
+                # Copy extend tokens
+                if page_size == 1 or topk == 1:
+                    extend_start = seq_len + topk_id * num_steps
+                    extend_end = extend_start + min(iter_upper, iters + 1)
+                    extend_data = token_pool_ptr[extend_start:extend_end]
+                else:
+                    prefix_len = seq_len
+                    last_page_len = prefix_len % page_size
+                    num_new_pages_per_topk = (last_page_len + num_steps + page_size - 1) // page_size
+                    prefix_base = seq_len // page_size * page_size
+                    start = prefix_base + topk_id * num_new_pages_per_topk * page_size + last_page_len
+                    extend_end = min(iter_upper, iters + 1)
+                    extend_data = token_pool_ptr[start:start + extend_end]
+               
+                kv_ptr[seq_len:seq_len + extend_end] = extend_data
 
-    # Update kv_indices
-    kv_offset = cum_seq_len * topk + bid * iters * topk + topk_id * (seq_len + iters)
-    kv_ptr = kv_indices + kv_offset
-    token_pool_ptr = req_to_token + tl.load(req_pool_indices + bid) * pool_len
-
-    kv_offset = tl.arange(0, BLOCK_SIZE)
-    num_loop = tl.cdiv(seq_len, BLOCK_SIZE)
-    for _ in range(num_loop):
-        mask = kv_offset < seq_len
-        data = tl.load(token_pool_ptr + kv_offset, mask=mask)
-        tl.store(kv_ptr + kv_offset, data, mask=mask)
-        kv_offset += BLOCK_SIZE
-
-    extend_offset = tl.arange(0, iter_upper)
-    if page_size == 1 or topk == 1:
-        extend_data = tl.load(
-            token_pool_ptr + seq_len + topk_id * num_steps + tl.arange(0, iter_upper),
-            mask=extend_offset < iters,
-        )
-    else:
-        prefix_len = seq_len
-        last_page_len = prefix_len % page_size
-        num_new_pages_per_topk = (
-            last_page_len + num_steps + page_size - 1
-        ) // page_size
-        prefix_base = seq_len // page_size * page_size
-        start = (
-            prefix_base + topk_id * num_new_pages_per_topk * page_size + last_page_len
-        )
-        extend_data = tl.load(
-            token_pool_ptr + start + extend_offset,
-            mask=extend_offset < iters,
-        )
-
-    tl.store(kv_ptr + seq_len + extend_offset, extend_data, mask=extend_offset < iters)
-
-    # Update kv_indptr
-    bs_offset = tl.arange(0, num_tokens_upper)
-
-    zid = bid * topk + topk_id
-    if zid == 0:
-        zid = num_seqs * topk
-    positions = tl.load(positions + bs_offset, mask=bs_offset < zid, other=0)
-    base = tl.sum(positions)
-    tl.store(kv_indptr + zid, base + zid * iters)
+                # Update kv_indptr
+                zid = bid * topk + topk_id
+                if zid == 0:
+                    zid = num_seqs * topk
+                if zid < len(positions):
+                    base = torch.sum(positions[:zid]).item()
+                    kv_indptr_ptr[zid] = base + zid * (iters + 1)
 
 
-@triton.jit
 def align_evict_mask_to_page_size(
     seq_lens,
     evict_mask,
-    page_size: tl.constexpr,
-    num_draft_tokens: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
+    page_size: int,
+    num_draft_tokens: int,
 ):
-    t_range = tl.arange(0, BLOCK_SIZE)
+    """
+    PyTorch implementation of the Triton kernel align_evict_mask_to_page_size
+    """
+    batch_size = seq_lens.shape[0]
+    BLOCK_SIZE = 128
+   
+    for bid in range(batch_size):
+        seq_len = seq_lens[bid].item()
+        mask_row = evict_mask[bid, :num_draft_tokens]
+       
+        num_trues = torch.sum(mask_row).item()
+        num_false = num_draft_tokens - num_trues
+       
+        start = ((seq_len + num_false - 1) // page_size * page_size - seq_len)
+        start = max(start, 0)
+        end = min(start + page_size, num_draft_tokens)
+       
+        if start < end:
+            evict_mask[bid, start:end] = False
 
-    bid = tl.program_id(axis=0)
-    seq_len = tl.load(seq_lens + bid)
-    io_mask = t_range < num_draft_tokens
-    mask_row = tl.load(
-        evict_mask + bid * num_draft_tokens + t_range, mask=io_mask, other=0
-    )
 
-    num_trues = tl.sum(mask_row)
-    num_false = num_draft_tokens - num_trues
-
-    start = (seq_len + num_false - 1) // page_size * page_size - seq_len
-    for i in range(max(start, 0), min(start + page_size, num_draft_tokens)):
-        tl.store(evict_mask + bid * num_draft_tokens + i, False)
-
-
-@triton.jit
 def get_target_cache_loc(
     tgt_cache_loc,
     to_free_slots,
     accept_length,
     to_free_num_slots,
     out_cache_loc,
-    num_verify_tokens: tl.constexpr,
-    num_verify_tokens_upper: tl.constexpr,
-    bs_upper: tl.constexpr,
+    num_verify_tokens: int,
+    num_verify_tokens_upper: int,
+    bs_upper: int,
 ):
-    bid = tl.program_id(axis=0)
-    offset = tl.arange(0, num_verify_tokens_upper)
-    bs_offset = tl.arange(0, bs_upper)
+    """
+    PyTorch implementation of the Triton kernel get_target_cache_loc
+    """
+    batch_size = accept_length.shape[0]
+   
+    for bid in range(batch_size):
+        # Write the first part to tgt_cache_loc
+        accept_len_all = torch.sum(accept_length[:bid]).item()
+        tgt_cache_loc_start = accept_len_all + bid
+        copy_len = accept_length[bid].item() + 1
+        out_cache_loc_row = out_cache_loc[bid, :copy_len]
+        tgt_cache_loc[tgt_cache_loc_start:tgt_cache_loc_start + copy_len] = out_cache_loc_row
 
-    # write the first part to tgt_cache_loc
-    accept_len_all = tl.load(accept_length + bs_offset, mask=bs_offset < bid)
-    tgt_cache_loc_start = tl.sum(accept_len_all) + bid
-    copy_len = tl.load(accept_length + bid) + 1
-    out_cache_loc_row = tl.load(
-        out_cache_loc + bid * num_verify_tokens + offset, mask=offset < copy_len
-    )
-    tl.store(
-        tgt_cache_loc + tgt_cache_loc_start + offset,
-        out_cache_loc_row,
-        mask=offset < copy_len,
-    )
+        # Write the second part to to_free_num_pages
+        to_free_num_slots_all = torch.sum(to_free_num_slots[:bid]).item()
+        to_free_num_slots_cur = to_free_num_slots[bid].item()
+        out_cache_loc_start = num_verify_tokens - to_free_num_slots_cur
+        to_free_slots_start = torch.sum(to_free_num_slots[:bid]).item()
 
-    # write the second part to to_free_num_pages
-    to_free_num_slots_all = tl.load(to_free_num_slots + bs_offset, mask=bs_offset < bid)
-    to_free_num_slots_cur = tl.load(to_free_num_slots + bid)
-    out_cache_loc_start = num_verify_tokens - to_free_num_slots_cur
-    to_free_slots_start = tl.sum(to_free_num_slots_all)
+        copy_len = to_free_num_slots_cur
+        if copy_len > 0:
+            out_cache_loc_row = out_cache_loc[bid, out_cache_loc_start:out_cache_loc_start + copy_len]
+            to_free_slots[to_free_slots_start:to_free_slots_start + copy_len] = out_cache_loc_row
 
-    copy_len = to_free_num_slots_cur
-    out_cache_loc_row = tl.load(
-        out_cache_loc + bid * num_verify_tokens + out_cache_loc_start + offset,
-        mask=offset < copy_len,
-    )
-    tl.store(
-        to_free_slots + to_free_slots_start + offset,
-        out_cache_loc_row,
-        mask=offset < copy_len,
-    )
+
+def filter_finished_cache_loc_kernel(
+    out_cache_loc,
+    tgt_cache_loc,
+    accept_length,
+    accept_length_filter,
+    bs_upper: int,
+    num_verify_tokens_upper: int,
+):
+    """
+    PyTorch implementation of the Triton kernel filter_finished_cache_loc_kernel
+    """
+    batch_size = accept_length.shape[0]
+   
+    for bid in range(batch_size):
+        accept_length_all = torch.sum(accept_length[:bid]).item()
+        old_start = accept_length_all + bid
+
+        accept_length_filter_all = torch.sum(accept_length_filter[:bid]).item()
+        new_start = accept_length_filter_all
+
+        copy_len = accept_length_filter[bid].item()
+        value = tgt_cache_loc[old_start:old_start + copy_len]
+        out_cache_loc[new_start:new_start + copy_len] = value
 
 
 @torch.compile(dynamic=True, disable=_is_npu)
@@ -417,36 +411,6 @@ def get_src_tgt_cache_loc(
     )
     to_free_num_slots = extended_len - keep_len
     return src_cache_loc, tgt_cache_loc, to_free_num_slots
-
-
-@triton.jit
-def filter_finished_cache_loc_kernel(
-    out_cache_loc,
-    tgt_cache_loc,
-    accept_length,
-    accept_length_filter,
-    bs_upper: tl.constexpr,
-    num_verify_tokens_upper: tl.constexpr,
-):
-    bid = tl.program_id(0)
-    bs_offset = tl.arange(0, bs_upper)
-
-    accept_length_all = tl.load(accept_length + bs_offset, mask=bs_offset < bid)
-    old_start = tl.sum(accept_length_all) + bid
-
-    accept_length_filter_all = tl.load(
-        accept_length_filter + bs_offset, mask=bs_offset < bid
-    )
-    new_start = tl.sum(accept_length_filter_all)
-
-    copy_len = tl.load(accept_length_filter + bid)
-    copy_offset = tl.arange(0, num_verify_tokens_upper)
-    value = tl.load(
-        tgt_cache_loc + old_start + copy_offset, mask=copy_offset < copy_len
-    )
-    tl.store(
-        out_cache_loc + new_start + copy_offset, value, mask=copy_offset < copy_len
-    )
 
 
 @torch.compile(dynamic=True, disable=_is_npu)
@@ -557,7 +521,7 @@ def generate_simulated_accept_index(
 
     accept_indx_first_col = accept_index[:, 0].view(-1, 1)
     sim_accept_index = torch.full(
-        (bs, spec_steps + 1), -1, dtype=torch.int32, device="cuda"
+        (bs, spec_steps + 1), -1, dtype=torch.int32, device="cpu"
     )
     sim_accept_index[:, :simulate_acc_len] = accept_indx_first_col + torch.arange(
         simulate_acc_len, device=accept_index.device

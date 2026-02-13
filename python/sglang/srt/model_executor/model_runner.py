@@ -220,7 +220,6 @@ TORCH_DTYPE_TO_KV_CACHE_STR = {
     torch.bfloat16: "bf16",
 }
 
-
 def add_mla_attention_backend(backend_name):
     if backend_name not in MLA_ATTENTION_BACKENDS:
         MLA_ATTENTION_BACKENDS.append(backend_name)
@@ -2343,11 +2342,11 @@ class ModelRunner(ModelRunnerKVCacheMixin):
             if self.device == "cpu"
             else forward_batch.forward_mode.is_cuda_graph
         )
-        can_run_graph = bool(
-            mode_check()
-            and self.graph_runner
-            and self.graph_runner.can_run(forward_batch)
-        )
+        can_run_graph = False #bool(
+        #    mode_check()
+        #    and self.graph_runner
+        #    and self.graph_runner.can_run(forward_batch)
+        #)
 
         if can_run_graph:
             ret = self.graph_runner.replay(

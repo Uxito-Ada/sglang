@@ -271,6 +271,22 @@ class RotaryEmbedding(MultiPlatformOp):
             positions = positions + offsets
         positions = positions.flatten()
         num_tokens = positions.shape[0]
+        #print(f"positions shape: {positions.shape}")
+        #print(f"cos_sin_cache shape: {self.cos_sin_cache.shape}")
+        #print(f"positions max: {positions.max()}")
+        #print(f"positions: {positions}")
+        max_pos = self.cos_sin_cache.size(0) - 1
+        if positions.max() >= max_pos or positions.min() < 0:
+    #import warnings
+    #warnings.warn(
+    #    f"Rotary positions ({positions.min().item()}-{positions.max().item()}) "
+    #    f"exceed cache size ({max_pos + 1}). Clamping to valid range. "
+    #    "This may degrade performance for long sequences!",
+    #    UserWarning,
+    #    stacklevel=2
+    #)
+          positions = torch.clamp(positions, min=0, max=max_pos)
+        #cos_sin = self.cos_sin_cache.index_select(0, positions)
         cos_sin = self.cos_sin_cache.index_select(0, positions)
         cos, sin = cos_sin.chunk(2, dim=-1)
 
@@ -334,7 +350,7 @@ class RotaryEmbedding(MultiPlatformOp):
         ), "fused_set_kv_buffer_arg is not supported for cpu implementation"
 
         positions = torch.add(positions, offsets) if offsets is not None else positions
-        if _is_cpu_amx_available:
+        if False: #_is_cpu_amx_available:
             return torch.ops.sgl_kernel.rotary_embedding_cpu(
                 positions,
                 query,

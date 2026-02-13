@@ -245,6 +245,7 @@ class Qwen2DecoderLayer(nn.Module):
             hidden_states = self.input_layernorm(hidden_states)
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
+        #print(self.self_attn)
         hidden_states = self.self_attn(
             positions=positions,
             hidden_states=hidden_states,
@@ -628,8 +629,8 @@ class Qwen2ForCausalLM(nn.Module):
         del self.lm_head.weight
         self.model.embed_tokens.weight = embed
         self.lm_head.weight = head
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+        #torch.cuda.empty_cache()
+        torch.cpu.synchronize()
 
     def load_kv_cache_scales(self, quantization_param_path: str) -> None:
         self.model.load_kv_cache_scales(quantization_param_path)
