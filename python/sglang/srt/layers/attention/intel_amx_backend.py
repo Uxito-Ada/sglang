@@ -86,10 +86,10 @@ class IntelAMXAttnBackend(AttentionBackend):
 
         _, max_extend_len = self.forward_metadata
 
-        print(f"forward_batch.seq_lens: {forward_batch.seq_lens}")
-        print(f"forward_batch.extend_seq_lens: {forward_batch.extend_seq_lens}")
-        print(f"max_extend_len: {max_extend_len}")
-        print(f"forward_batch.extend_start_loc: {forward_batch.extend_start_loc}")
+        #print(f"forward_batch.seq_lens: {forward_batch.seq_lens}")
+        #print(f"forward_batch.extend_seq_lens: {forward_batch.extend_seq_lens}")
+        #print(f"max_extend_len: {max_extend_len}")
+        #print(f"forward_batch.extend_start_loc: {forward_batch.extend_start_loc}")
         if forward_batch.extend_start_loc is None:
             forward_batch.extend_start_loc = torch.tensor([0], dtype=forward_batch.req_to_token_pool.req_to_token.dtype)
         self.extend_attention_fwd(
