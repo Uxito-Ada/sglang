@@ -24,9 +24,9 @@ def organize_draft_results(
 ):
     score_list = torch.cat(score_list, dim=1).flatten(1)
     ss_token_list = torch.cat(token_list, dim=1)
-    print(f"score_list shape: {score_list.shape}")
-    print(f"score_list last dim len: {len(score_list[-1])}")
-    print(f"k = {num_draft_token - 1}")
+    #print(f"score_list shape: {score_list.shape}")
+    #print(f"score_list last dim len: {len(score_list[-1])}")
+    #print(f"k = {num_draft_token - 1}")
     top_scores = torch.topk(score_list, num_draft_token - 1, dim=-1)
     top_scores_index = top_scores.indices
     top_scores_index = torch.sort(top_scores_index).values
